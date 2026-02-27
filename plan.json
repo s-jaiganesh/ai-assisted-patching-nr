@@ -1,0 +1,70 @@
+{
+  "metadata": {
+    "change_id": "CHG0001234",
+    "timezone": "America/New_York",
+    "change_window": {
+      "start": "2026-02-13T23:00:00-05:00",
+      "end": "2026-02-14T06:00:00-05:00"
+    }
+  },
+  "waves": [
+    {
+      "wave_id": "W1_2300",
+      "scheduled_start": "23:00",
+      "inventory_group": "week3_sat_2300",
+      "limit_hosts": [
+        "duapgdresbapp32"
+      ]
+    }
+  ],
+  "integrations": {
+    "aap": {
+      "controller_url": "https://ansible.genpt.net",
+      "job_template_id": 970,
+      "token": "${AAP_TOKEN}",
+      "poll_interval_seconds": 15,
+      "job_timeout_seconds": 14400,
+      "verify_ssl": false,
+      "teams_update_every_seconds": 600
+    },
+    "postgres": {
+      "host": "augpcpdansapp05.genpt.net",
+      "port": 5432,
+      "dbname": "patching",
+      "user": "${PG_USER}",
+      "password": "${PG_PASS}",
+      "table": "patch_status_CHG0001234_20260213_230000"
+    },
+    "llm": {
+      "client_id": "${GAS_CLIENT_ID}",
+      "client_secret": "${GAS_CLIENT_SECRET}",
+      "token_url": "https://st.api.genpt.com/oauthv2/token",
+      "base_url": "https://st.api.genpt.com",
+      "model": "gpt-4.1-2025-04-14",
+      "llm_proxy_url": "https://st.api.genpt.com/genaisp/gas"
+    },
+    "newrelic": {
+      "enabled": true,
+      "graphql_url": "https://api.newrelic.com/graphql",
+      "api_key": "${NR_TOKEN}",
+      "traffic_minutes": 5
+    },
+    "communications": {
+      "teams": {
+        "enabled": true,
+        "webhook_url": "${TEAMS_WEBHOOK}"
+      }
+    }
+  },
+  "policies": {
+    "ai_decisions_allowed": [
+      "PROCEED_NEXT_WAVE",
+      "RETRY_FAILED_HOSTS",
+      "SKIP_FAILED_AND_PROCEED"
+    ],
+    "max_retry_rounds": 1,
+    "retry_only_if_reachable": true
+  },
+  "execution_mode": "nr-test",
+  "debug": true
+}

@@ -1,0 +1,7 @@
+
+- hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Hello world test
+      debug:
+        msg: "TEST MODE: Workflow executed successfully"

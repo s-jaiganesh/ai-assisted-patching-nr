@@ -1,0 +1,48 @@
+---
+- name: Gather minimal facts
+  ansible.builtin.setup:
+    gather_subset: [min, hardware]
+
+- name: Get mount facts
+  ansible.builtin.set_fact:
+    _mounts: "{{ ansible_facts.mounts | default([]) }}"
+
+- name: Get root and boot filesystem facts
+  ansible.builtin.set_fact:
+    _root: "{{ (_mounts | selectattr('mount', 'equalto', '/') | list | first) | default({}) }}"
+    _boot: "{{ (_mounts | selectattr('mount', 'equalto', '/boot') | list | first) | default({}) }}"
+
+- name: Calculate free space in MB
+  ansible.builtin.set_fact:
+    _root_free_mb: "{{ ((_root.size_available | default(0) | int) / 1024 / 1024) | round(1) }}"
+    _boot_free_mb: "{{ ((_boot.size_available | default(0) | int) / 1024 / 1024) | round(1) }}"
+
+- name: Check if free space is sufficient
+  ansible.builtin.set_fact:
+    _root_ok: "{{ _root_free_mb | float >= (min_free_mb_root | int) }}"
+    _boot_ok: "{{ _boot_free_mb | float >= (min_free_mb_boot | int) }}"
+
+- name: Set status based on space checks
+  ansible.builtin.set_fact:
+    _pre_check_status: "{{ 'success' if (_root_ok and _boot_ok) else 'failed' }}"
+    _pre_check_reason: >-
+      {%- if _root_ok and _boot_ok -%}
+      Prechecks passed
+      {%- else -%}
+      Disk space precheck failed.
+      {%- if not _root_ok %} Root free: {{ _root_free_mb }}MB (min: {{ min_free_mb_root }}MB).{% endif -%}
+      {%- if not _boot_ok %} Boot free: {{ _boot_free_mb }}MB (min: {{ min_free_mb_boot }}MB).{% endif -%}
+      {%- endif -%}
+
+- name: Write pre-check status to database
+  include_role:
+    name: db_writer
+  vars:
+    db_stage: "pre_check"
+    db_status: "{{ _pre_check_status }}"
+    db_reason: "{{ _pre_check_reason }}"
+
+- name: Fail the play if pre-checks did not pass
+  ansible.builtin.fail:
+    msg: "{{ _pre_check_reason }}"
+  when: _pre_check_status == 'failed'

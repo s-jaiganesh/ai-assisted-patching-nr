@@ -1,0 +1,31 @@
+---
+- block:
+    - ansible.builtin.command: uname -r
+      register: running_kernel
+      changed_when: false
+
+    - ansible.builtin.shell: "rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort -V | tail -n 1"
+      register: latest_kernel
+      changed_when: false
+      become: true
+
+    - ansible.builtin.set_fact:
+        _running: "{{ running_kernel.stdout | trim }}"
+        _latest: "{{ latest_kernel.stdout | trim }}"
+        _is_latest: "{{ (running_kernel.stdout | trim) == (latest_kernel.stdout | trim) }}"
+
+    - ansible.builtin.set_fact:
+        _kernel_check_status: "{{ 'success' if _is_latest else 'failed' }}"
+        _kernel_check_reason: "running={{ _running }}, latest={{ _latest }}"
+
+  rescue:
+    - ansible.builtin.set_fact:
+        _kernel_check_status: failed
+        _kernel_check_reason: "{{ ansible_failed_result.msg | default('kernel check failed') }}"
+
+  always:
+    - include_role: { name: db_writer }
+      vars:
+        db_stage: kernel_check
+        db_status: "{{ _kernel_check_status | default('unknown') }}"
+        db_reason: "{{ _kernel_check_reason | default('unknown') }}"
