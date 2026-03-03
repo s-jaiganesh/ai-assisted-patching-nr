@@ -1,0 +1,43 @@
+---
+- name: Patching pipeline (stage-controlled)
+  hosts: all
+  gather_facts: yes
+  any_errors_fatal: false
+
+  vars:
+    stage: "{{ stage | default('full') }}"
+    patch_table: "{{ patch_table | default('patch_status_default') }}"
+    pg_host: "{{ patch_db.host }}"
+    pg_port: "{{ patch_db.port | default(5432) }}"
+    pg_dbname: "{{ pg_dbname | default(omit) }}"
+    pg_user: "{{ patch_db.username }}"
+    pg_password: "{{ patch_db.password }}"
+    min_free_mb_root: 2048
+    min_free_mb_boot: 50
+
+  pre_tasks:
+    - name: Ensure DB creds provided (POC)
+      ansible.builtin.assert:
+        that:
+          - pg_host is defined
+          - pg_dbname is defined
+          - pg_user is defined
+          - pg_password is defined
+        fail_msg: "Postgres creds missing. In prod use AAP Credential injector."
+      run_once: true
+
+  tasks:
+    - include_role: { name: pre_check }
+      when: stage in ['full','pre_check']
+
+    - include_role: { name: apply_patch }
+      when: stage in ['full','apply_patch']
+
+    - include_role: { name: post_reboot }
+      when: stage in ['full','post_reboot']
+
+    - include_role: { name: post_check }
+      when: stage in ['full','post_check']
+
+    - include_role: { name: kernel_check }
+      when: stage in ['full','kernel_check']
