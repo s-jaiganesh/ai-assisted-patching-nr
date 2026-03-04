@@ -9,7 +9,7 @@
   },
   "integrations": {
     "aap": {
-      "controller_url": "https://ansible.genpt.net",
+      "controller_url": "https://ansible.company.com",
       "inventory_name": "patching_test",
       "inventory_id": 303,
       "job_template_id": 970,
@@ -20,7 +20,7 @@
       "teams_update_every_seconds": 600
     },
     "postgres": {
-      "host": "augpcpdansapp05.genpt.net",
+      "host": "host.company.com",
       "port": 5432,
       "dbname": "patching",
       "user": "${PG_USER}",
@@ -29,10 +29,10 @@
     "llm": {
       "client_id": "${GAS_CLIENT_ID}",
       "client_secret": "${GAS_CLIENT_SECRET}",
-      "token_url": "https://st.api.genpt.com/oauthv2/token",
-      "base_url": "https://st.api.genpt.com",
+      "token_url": "https://st.api.company.com/oauthv2/token",
+      "base_url": "https://st.api.company.com",
       "model": "gpt-4.1-2025-04-14",
-      "llm_proxy_url": "https://st.api.genpt.com/genaisp/gas"
+      "llm_proxy_url": "https://st.api.company.com/genaisp/gas"
     },
     "newrelic": {
       "enabled": true,
@@ -58,4 +58,5 @@
   },
   "execution_mode": "aap",
   "debug": true
+
 }
