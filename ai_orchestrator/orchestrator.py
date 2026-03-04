@@ -219,7 +219,7 @@ def main():
 
     # Wait for jobs (monitoring sequentially is ok; jobs run concurrently in AAP)
     for inv_group, job_id in jobs.items():
-        if job_id.startswith("LOCAL-"):
+        if str(job_id).startswith("LOCAL-"):
             continue
 
         def on_heartbeat(job_json: dict, _inv=inv_group, _job=job_id):
@@ -231,7 +231,7 @@ def main():
         status = client.wait_for_job(
             job_id,
             poll_seconds=int(aap_cfg.get("poll_interval_seconds", 15)),
-            timeout_seconds=600,  # Iteration-1 requirement: 10 minutes
+            timeout_seconds=int(aap_cfg.get("job_timeout_seconds", 14400)),
             heartbeat_seconds=int(aap_cfg.get("teams_update_every_seconds", 600)),
             on_heartbeat=on_heartbeat,
         )
@@ -285,7 +285,7 @@ def main():
         note = (decision_obj.get("note", "") or "").strip()
 
         if use_teams:
-            status_str = (job_status.get(inv_group, {}) or {}).get("status", "unknown")
+            status_str = job_status.get(inv_group, "unknown")
             msg = f"{meta['change_id']} | {inv_group} | AAP={status_str} | failed={len(cls['failed'])} | unreachable={len(cls['unreachable'])} | AI={decision}."
             if note:
                 msg += f" Note: {note}"
