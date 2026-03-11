@@ -4,7 +4,6 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from time import sleep
-
 from .plan_loader import load_plan
 from .scheduler import parse_group_name_for_schedule, tz_now
 from .aap_client import AAPClient
@@ -13,10 +12,8 @@ from .decision_gate import ai_select_waves, ai_decide
 from .teams_notifier import post_teams
 from .newrelic_client import NewRelicClient
 
-
 def build_limit(hosts: list[str]) -> str:
     return ",".join(hosts)
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -100,14 +97,36 @@ def main():
         "inventory_groups": all_groups,
     }
 
-    wave_sel = ai_select_waves(plan, wave_ctx)
-    print("waves_sel", wave_sel)
 
-    selected_groups = wave_sel.get("waves_to_run", []) or []
+    # --- PYTHON GROUP FILTER (deterministic) ---
+    candidate_groups = []
+    for g in all_groups:
+        sched = parse_group_name_for_schedule(g, cw_start, tz)
+        if not sched:
+            continue
+        if sched < cw_start or sched > cw_end:
+            continue
+        candidate_groups.append(g)
+    
+    print("candidate_groups", candidate_groups)
+    # --- AI VALIDATION ---
+    
+    wave_ctx = {
+        "timezone": tz_name,
+        "current_time": current_time.isoformat(),
+        "change_window": {
+            "start": meta["change_window"]["start"],
+            "end": meta["change_window"]["end"]
+        },
+        "candidate_groups": candidate_groups
+    
+    }
+    wave_sel = ai_select_waves(plan, wave_ctx)
+    selected_groups = wave_sel.get("waves_to_run", []) or []    
     print("selected groups", selected_groups)
 
-    ai_wave_note = wave_sel.get("note", "")
-
+    ai_wave_note = wave_sel.get("note", "")    
+    
     if not selected_groups:
         msg = f"{meta['change_id']} | No patching waves selected within change window. AI_note={ai_wave_note or 'n/a'}. Failing automation."
         print(msg)
