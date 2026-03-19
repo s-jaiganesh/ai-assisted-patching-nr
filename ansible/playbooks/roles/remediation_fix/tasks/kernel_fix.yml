@@ -1,0 +1,10 @@
+---
+- name: Reinstall kernel package on RHEL8+
+  ansible.builtin.shell: dnf -y reinstall kernel
+  when: ansible_facts['distribution_major_version'] | int >= 8
+  become: true
+
+- name: Reinstall kernel package on RHEL7
+  ansible.builtin.shell: yum -y reinstall kernel
+  when: ansible_facts['distribution_major_version'] | int < 8
+  become: true

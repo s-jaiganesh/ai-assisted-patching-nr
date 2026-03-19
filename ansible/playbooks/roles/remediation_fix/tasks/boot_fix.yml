@@ -1,0 +1,31 @@
+---
+- name: Get running kernel version
+  ansible.builtin.command: uname -r
+  register: _running_kernel
+  changed_when: false
+
+- name: Collect installed kernels newest first
+  ansible.builtin.shell: "rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort -V -r"
+  register: _installed_kernels
+  changed_when: false
+  become: true
+
+- name: Select kernels to keep and remove
+  ansible.builtin.set_fact:
+    _kernel_lines: "{{ _installed_kernels.stdout_lines | default([]) }}"
+    _keep_kernels: "{{ ((_installed_kernels.stdout_lines | default([])) | select('equalto', _running_kernel.stdout | trim) | list) + (((_installed_kernels.stdout_lines | default([])) | reject('equalto', _running_kernel.stdout | trim) | list)[:1]) }}"
+    _remove_kernels: "{{ (_installed_kernels.stdout_lines | default([])) | difference(_keep_kernels | default([])) }}"
+
+- name: Remove older kernels beyond current and previous
+  ansible.builtin.shell: >-
+    {% if _remove_kernels | length > 0 %}
+    {% set pkgs = _remove_kernels | map('regex_replace', '^(.*)$', 'kernel-\\1') | join(' ') %}
+    {% if ansible_facts['distribution_major_version'] | int >= 8 %}
+    dnf -y remove {{ pkgs }}
+    {% else %}
+    yum -y remove {{ pkgs }}
+    {% endif %}
+    {% else %}
+    echo 'No old kernels to remove'
+    {% endif %}
+  become: true

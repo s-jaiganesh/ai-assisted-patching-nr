@@ -1,0 +1,4 @@
+---
+- name: Root filesystem issue requires manual intervention
+  ansible.builtin.debug:
+    msg: "Root filesystem issue detected on {{ inventory_hostname }}. Manual investigation required."

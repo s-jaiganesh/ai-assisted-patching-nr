@@ -1,0 +1,4 @@
+---
+- name: Rebuild rpm database
+  ansible.builtin.command: rpm --rebuilddb
+  become: true

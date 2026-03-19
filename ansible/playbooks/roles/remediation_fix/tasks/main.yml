@@ -1,0 +1,25 @@
+---
+- name: Determine remediation type for host
+  ansible.builtin.set_fact:
+    _fix_type: "{{ remediation_plan[inventory_hostname] | default('no_fix') }}"
+
+- name: Include boot cleanup fix
+  ansible.builtin.include_tasks: boot_fix.yml
+  when: _fix_type == 'boot_cleanup'
+
+- name: Include rpm db rebuild fix
+  ansible.builtin.include_tasks: rpm_db_fix.yml
+  when: _fix_type == 'rpm_db_rebuild'
+
+- name: Include kernel reinstall fix
+  ansible.builtin.include_tasks: kernel_fix.yml
+  when: _fix_type == 'kernel_reinstall'
+
+- name: Include root issue notice
+  ansible.builtin.include_tasks: root_issue.yml
+  when: _fix_type == 'root_issue'
+
+- name: No remediation selected
+  ansible.builtin.debug:
+    msg: "No safe remediation selected for {{ inventory_hostname }}"
+  when: _fix_type == 'no_fix'
