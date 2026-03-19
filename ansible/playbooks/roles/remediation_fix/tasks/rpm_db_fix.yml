@@ -23,3 +23,12 @@
 - name: Display RPM query result count
   debug:
     msg: "RPM database rebuilt successfully. Total packages: {{ rpm_verify.stdout_lines | length }}"
+
+- name: Verify rpm db
+  command: rpm -qa
+  register: rpm_check
+  ignore_errors: yes
+
+- name: Set remediation status
+  set_fact:
+    rpm_fix_success: "{{ rpm_check.rc == 0 }}"

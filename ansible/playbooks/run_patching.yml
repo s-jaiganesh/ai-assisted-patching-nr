@@ -35,6 +35,14 @@
         fail_msg: "Postgres creds missing. In prod use AAP Credential injector."
       run_once: true
 
+    - name: Validate start_stage
+      ansible.builtin.assert:
+        that:
+          - start_stage in stage_order_map
+        fail_msg: "Invalid start_stage passed to playbook"
+      when: rerun_mode | bool
+      run_once: true
+
   tasks:
     - include_role: { name: pre_check }
       when: 
