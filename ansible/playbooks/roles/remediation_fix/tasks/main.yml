@@ -16,7 +16,7 @@
   when: _fix_type == 'kernel_reinstall'
 
 - name: Include root issue notice
-  ansible.builtin.include_tasks: root_issue.yml
+  ansible.builtin.include_tasks: root_fix.yml
   when: _fix_type == 'root_issue'
 
 - name: No remediation selected

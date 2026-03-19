@@ -1,10 +1,44 @@
 ---
-- name: Reinstall kernel package on RHEL8+
-  ansible.builtin.shell: dnf -y reinstall kernel
-  when: ansible_facts['distribution_major_version'] | int >= 8
-  become: true
-
-- name: Reinstall kernel package on RHEL7
-  ansible.builtin.shell: yum -y reinstall kernel
-  when: ansible_facts['distribution_major_version'] | int < 8
-  become: true
+- name: Get installed kernels
+  command: rpm -q kernel
+  register: kernel_list
+  changed_when: false
+  failed_when: kernel_list.rc != 0
+- name: Determine latest kernel version
+  set_fact:
+    latest_kernel: "{{ (kernel_list.stdout_lines | sort | last).replace('kernel-', '') }}"
+- name: Ensure kernel image exists in /boot
+  stat:
+    path: "/boot/vmlinuz-{{ latest_kernel }}"
+  register: kernel_image
+- name: Fail if kernel image missing
+  fail:
+    msg: "Kernel image missing in /boot for version {{ latest_kernel }}"
+  when: not kernel_image.stat.exists
+- name: Verify kernel integrity
+  command: rpm -V kernel-{{ latest_kernel }}
+  register: kernel_verify
+  changed_when: false
+  failed_when: false
+- name: Reinstall kernel (RHEL 8/9)
+  command: dnf -y reinstall kernel-{{ latest_kernel }}
+  when:
+    - kernel_verify.rc != 0
+    - ansible_distribution_major_version | int >= 8
+  register: reinstall_result
+- name: Reinstall kernel (RHEL 7)
+  command: yum -y reinstall kernel-{{ latest_kernel }}
+  when:
+    - kernel_verify.rc != 0
+    - ansible_distribution_major_version | int == 7
+  register: reinstall_result
+- name: Regenerate initramfs if repaired
+  command: dracut -f /boot/initramfs-{{ latest_kernel }}.img {{ latest_kernel }}
+  when: kernel_verify.rc != 0
+- name: Get current default kernel
+  command: grubby --default-kernel
+  register: current_default
+  changed_when: false
+- name: Set default kernel if not already set
+  command: grubby --set-default /boot/vmlinuz-{{ latest_kernel }}
+  when: current_default.stdout != "/boot/vmlinuz-{{ latest_kernel }}"
