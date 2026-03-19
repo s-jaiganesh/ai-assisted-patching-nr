@@ -1,0 +1,35 @@
+---
+- name: Apply patches
+  block:
+    - name: Use dnf (RHEL8+)
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+      when: (ansible_facts['distribution'] == 'RedHat') and (ansible_facts['distribution_major_version'] | int >= 8)
+      become: true
+
+    - name: Use yum (RHEL7)
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+      when: (ansible_facts['distribution'] == 'RedHat') and (ansible_facts['distribution_major_version'] | int < 8)
+      become: true
+   
+    - ansible.builtin.set_fact:
+        _apply_patch_status: success
+        _apply_patch_reason: "applying patches passed"
+
+  rescue:
+    - ansible.builtin.set_fact:
+        _apply_patch_status: failed
+        _apply_patch_reason: "{{ ansible_failed_result.msg | default('applying patches failed') }}"
+        apply_patch_failed: true
+
+  always:
+    - name: DB update - apply_patch
+      include_role:
+        name: db_writer
+      vars:
+        db_stage: "apply_patch"
+        db_status: "{{ _apply_patch_status | default('unknown') }}"
+        db_reason: "{{ _apply_patch_reason | default('unknown') }}"

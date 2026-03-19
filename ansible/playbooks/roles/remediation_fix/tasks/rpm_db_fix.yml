@@ -1,0 +1,25 @@
+---
+- name: Remove __db.* files (RPM DB lock/stale files)
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_fileglob:
+    - "/var/lib/rpm/__db*"
+  ignore_errors: true
+
+- name: Rebuild RPM database
+  command: rpm --rebuilddb
+  args:
+    chdir: /var/lib/rpm
+
+- name: Clean all yum metadata and cache
+  command: yum clean all
+
+- name: Verify RPM database integrity
+  command: rpm -qa
+  register: rpm_verify
+  changed_when: false
+
+- name: Display RPM query result count
+  debug:
+    msg: "RPM database rebuilt successfully. Total packages: {{ rpm_verify.stdout_lines | length }}"

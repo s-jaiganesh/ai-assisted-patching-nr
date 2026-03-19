@@ -1,0 +1,67 @@
+---
+- name: Patching pipeline (stage-controlled)
+  hosts: all
+  gather_facts: yes
+  any_errors_fatal: false
+
+  vars:
+    min_free_mb_root: 2048
+    min_free_mb_boot: 50
+    stage: "{{ stage | default('full') }}"
+    patch_table: "{{ patch_table | default('patch_status_default') }}"
+    pg_host: "{{ patch_db.host }}"
+    pg_port: "{{ patch_db.port | default(5432) }}"
+    pg_dbname: "{{ pg_dbname | default(omit) }}"
+    pg_user: "{{ patch_db.username }}"
+    pg_password: "{{ patch_db.password }}"
+    rerun_mode: "{{ rerun_mode | default(false) | bool }}"
+    start_stage: "{{ start_stage | default('pre_check') }}"
+    start_stage_order: "{{ stage_order_map[start_stage] | default(1) }}"
+    stage_order_map:
+      pre_check: 1
+      apply_patch: 2
+      post_reboot: 3
+      post_check: 4
+      kernel_check: 5
+
+  pre_tasks:
+    - name: Ensure DB creds provided
+      ansible.builtin.assert:
+        that:
+          - pg_host is defined
+          - pg_dbname is defined
+          - pg_user is defined
+          - pg_password is defined
+        fail_msg: "Postgres creds missing. In prod use AAP Credential injector."
+      run_once: true
+
+  tasks:
+    - include_role: { name: pre_check }
+      when: 
+        (not rerun_mode and stage in ['full','pre_check'])
+        or
+        (rerun_mode and start_stage is defined and start_stage_order | int <= 1)
+
+    - include_role: { name: apply_patch }
+      when: 
+        (not rerun_mode and stage in ['full','apply_patch'])
+        or
+        (rerun_mode and start_stage is defined and start_stage_order | int <= 2)
+
+    - include_role: { name: post_reboot }
+      when: 
+        (not rerun_mode and stage in ['full','post_reboot'])
+        or
+        (rerun_mode and start_stage is defined and start_stage_order | int <= 3)
+
+    - include_role: { name: post_check }
+      when: 
+        (not rerun_mode and stage in ['full','post_check'])
+        or
+        (rerun_mode and start_stage is defined and start_stage_order | int <= 4)
+    
+    - include_role: { name: kernel_check }
+      when: 
+        (not rerun_mode and stage in ['full','kernel_check'])
+        or
+        (rerun_mode and start_stage is defined and start_stage_order | int <= 5)

@@ -1,0 +1,19 @@
+- name: Write patch status to PostgreSQL
+  community.postgresql.postgresql_query:
+    login_host: "{{ pg_host }}"
+    login_port: "{{ pg_port | default(5432) }}"
+    login_user: "{{ pg_user }}"
+    login_password: "{{ pg_password }}"
+    db: "{{ pg_dbname }}"
+    query: >
+      INSERT INTO {{ patch_table }} (server, {{ db_stage }}, {{ db_stage }}_reason, updated_at)
+      VALUES (%s, %s, %s, NOW())
+      ON CONFLICT (server) DO UPDATE
+      SET {{ db_stage }} = EXCLUDED.{{ db_stage }},
+          {{ db_stage }}_reason = EXCLUDED.{{ db_stage }}_reason,
+          updated_at = NOW();
+    positional_args:
+      - "{{ inventory_hostname }}"
+      - "{{ db_status }}"
+      - "{{ db_reason | default('') }}"
+  delegate_to: "{{ pg_host }}"
