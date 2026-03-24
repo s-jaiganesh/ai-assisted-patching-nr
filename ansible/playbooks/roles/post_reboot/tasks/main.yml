@@ -1,0 +1,25 @@
+---
+- block:
+    - name: Reboot system
+      ansible.builtin.reboot:
+        reboot_timeout: 1800
+      become: true
+      when: not (apply_patch_failed | default(false)) | bool
+      register: _reboot
+      ignore_errors: true
+
+    - ansible.builtin.set_fact:
+        _post_reboot_status: success
+        _post_reboot_reason: "Reboot completed successfully"
+
+  rescue:
+    - ansible.builtin.set_fact:
+        _post_reboot_status: failed
+        _post_reboot_reason: "{{ ansible_failed_result.msg | default('post reboot failed') }}"
+
+  always:
+    - include_role: { name: db_writer }
+      vars:
+        db_stage: post_reboot
+        db_status: "{{ _post_reboot_status | default('unknown') }}"
+        db_reason: "{{ _post_reboot_reason | default('unknown') }}"

@@ -1,0 +1,71 @@
+---
+- name: Send patching completion email with reports
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    email_subject: "CHG{{ change_id }} – Monthly OS Patching – Completed"
+    email_body: |
+      Hello Team,
+
+      Monthly OS patching has completed.
+
+      Total servers patched: {{ total_servers | int }}
+      Success count: {{ success_count | int }}
+      Failed count: {{ failed_count | int }}
+
+      {{ operations_note | default('Please review the attached reports and take action for failed servers as needed.') }}
+
+      Regards,
+      AI-Assisted Patching Automation
+
+  tasks:
+    - name: Validate required email inputs
+      ansible.builtin.assert:
+        that:
+          - change_id is defined
+          - email_to is defined
+          - (email_to | length) > 0
+          - smtp_host is defined
+          - patch_report_path is defined
+          - apm_report_path is defined
+        fail_msg: "Required email variables are missing."
+
+    - name: Check patch report exists
+      ansible.builtin.stat:
+        path: "{{ patch_report_path }}"
+      register: patch_report_stat
+
+    - name: Check APM report exists
+      ansible.builtin.stat:
+        path: "{{ apm_report_path }}"
+      register: apm_report_stat
+
+    - name: Fail if patch report missing or empty
+      ansible.builtin.assert:
+        that:
+          - patch_report_stat.stat.exists
+          - (patch_report_stat.stat.size | int) > 0
+        fail_msg: "Patch report attachment missing or empty: {{ patch_report_path }}"
+
+    - name: Fail if APM report missing or empty
+      ansible.builtin.assert:
+        that:
+          - apm_report_stat.stat.exists
+          - (apm_report_stat.stat.size | int) > 0
+        fail_msg: "APM report attachment missing or empty: {{ apm_report_path }}"
+
+    - name: Send completion email
+      ansible.builtin.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port | default(25) | int }}"
+        to: "{{ email_to | join(',') if email_to is sequence and email_to is not string else email_to }}"
+        cc: "{{ email_cc | default([]) | join(',') if (email_cc | default([])) is sequence and (email_cc | default([])) is not string else (email_cc | default('')) }}"
+        from: "{{ email_from | default('') }}"
+        subject: "{{ email_subject }}"
+        body: "{{ email_body }}"
+        attach:
+          - "{{ patch_report_path }}"
+          - "{{ apm_report_path }}"
+      delegate_to: localhost

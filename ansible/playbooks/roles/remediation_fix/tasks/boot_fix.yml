@@ -1,0 +1,66 @@
+---
+- name: Ensure cleanup utility is installed (RHEL 7)
+  ansible.builtin.package:
+    name: yum-utils
+    state: present
+  when: ansible_distribution_major_version | int == 7
+- name: Ensure cleanup utility is installed (RHEL 8/9)
+  ansible.builtin.package:
+    name: dnf-utils
+    state: present
+  when: ansible_distribution_major_version | int >= 8
+- name: Get running kernel
+  ansible.builtin.command: uname -r
+  register: running_kernel
+  changed_when: false
+- name: Show running kernel
+  ansible.builtin.debug:
+    msg: "Running kernel: {{ running_kernel.stdout }}"
+#################################################################
+# RHEL 7
+#################################################################
+- name: Preview old kernels to be removed (RHEL 7)
+  ansible.builtin.command: >
+    package-cleanup --oldkernels --count=2 --quiet
+  register: old_kernels_rhel7
+  changed_when: false
+  failed_when: false
+  when: ansible_distribution_major_version | int == 7
+- name: Show kernels that would be removed (RHEL 7)
+  ansible.builtin.debug:
+    var: old_kernels_rhel7.stdout_lines
+  when:
+    - ansible_distribution_major_version | int == 7
+    - old_kernels_rhel7.stdout_lines is defined
+    - old_kernels_rhel7.stdout_lines | length > 0
+- name: Remove old kernels (RHEL 7)
+  ansible.builtin.command: >
+    package-cleanup --oldkernels --count=2 -y
+  when:
+    - ansible_distribution_major_version | int == 7
+    - old_kernels_rhel7.stdout_lines is defined
+    - old_kernels_rhel7.stdout_lines | length > 0
+#################################################################
+# RHEL 8 / 9
+#################################################################
+- name: Preview old kernels to be removed (RHEL 8/9)
+  ansible.builtin.command: >
+    dnf repoquery --installonly --latest-limit=-2 -q
+  register: old_kernels_rhel89
+  changed_when: false
+  failed_when: false
+  when: ansible_distribution_major_version | int >= 8
+- name: Show kernels that would be removed (RHEL 8/9)
+  ansible.builtin.debug:
+    var: old_kernels_rhel89.stdout_lines
+  when:
+    - ansible_distribution_major_version | int >= 8
+    - old_kernels_rhel89.stdout_lines is defined
+    - old_kernels_rhel89.stdout_lines | length > 0
+- name: Remove old kernels (RHEL 8/9)
+  ansible.builtin.command: >
+    dnf remove -y {{ old_kernels_rhel89.stdout_lines | join(' ') }}
+  when:
+    - ansible_distribution_major_version | int >= 8
+    - old_kernels_rhel89.stdout_lines is defined
+    - old_kernels_rhel89.stdout_lines | length > 0
