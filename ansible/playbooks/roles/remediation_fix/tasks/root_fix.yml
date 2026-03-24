@@ -1,0 +1,9 @@
+---
+- name: Run yum clean all (RHEL 7)
+  command: yum clean all
+  when: ansible_distribution_major_version == "7"
+  ignore_errors: yes
+- name: Run dnf clean all (RHEL 8/9)
+  command: dnf clean all
+  when: ansible_distribution_major_version in ["8", "9"]
+  ignore_errors: yes
