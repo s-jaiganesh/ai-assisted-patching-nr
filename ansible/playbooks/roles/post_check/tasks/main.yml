@@ -1,0 +1,16 @@
+---
+- block:
+    - ansible.builtin.ping:
+    - ansible.builtin.set_fact:
+        _post_check_status: success
+        _post_check_reason: "Host reachable after patching"
+  rescue:
+    - ansible.builtin.set_fact:
+        _post_check_status: failed
+        _post_check_reason: "{{ ansible_failed_result.msg | default('post check failed') }}"
+  always:
+    - include_role: { name: db_writer }
+      vars:
+        db_stage: post_check
+        db_status: "{{ _post_check_status }}"
+        db_reason: "{{ _post_check_reason }}"

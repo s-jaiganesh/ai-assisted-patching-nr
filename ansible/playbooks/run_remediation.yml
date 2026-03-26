@@ -1,0 +1,11 @@
+---
+- name: Controlled remediation pipeline
+  hosts: all
+  gather_facts: yes
+  any_errors_fatal: false
+  vars:
+    remediation_plan: "{{ remediation_plan | default({}) }}"
+    failed_stage: "{{ failed_stage | default('unknown') }}"
+  tasks:
+    - include_role:
+        name: remediation_fix
