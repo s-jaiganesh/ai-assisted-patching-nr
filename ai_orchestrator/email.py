@@ -10,6 +10,7 @@ def generate_and_print_email_vars(
     actual_start_time: datetime | None,
     actual_end_time: datetime | None,
     has_waves_run: bool,
+    report_links=None
 ) -> None:
     """
     Generates an HTML email summary of the patching process and prints variables
@@ -53,11 +54,22 @@ def generate_and_print_email_vars(
         apm_green = sum(1 for r in apm_rows if str(r.get("apm_post_alert", "")).lower() in ["green", "ok", "not_alerting"])
         apm_red = sum(1 for r in apm_rows if str(r.get("apm_post_alert", "")).lower() in ["red", "critical", "alerting"])
         nr_reporting = sum(1 for r in apm_rows if r.get("infra_post_reporting") is True)
-
-        formatted_start = actual_start_time.strftime("%m/%d/%Y %I:%M %p") if actual_start_time else "N/A"
-        formatted_end = actual_end_time.strftime("%m/%d/%Y %I:%M %p") if actual_end_time else "N/A"
-
-        html_content = f"""
+        # -----------------------------
+        # SHAREPOINT REPORT LINKS
+        # -----------------------------
+        patch_link_html = ""
+        apm_link_html = ""
+        
+        if report_links:
+            if report_links.get("patch_report"):
+                patch_link_html = f'<a href="{report_links["patch_report"]}">Patch Report</a>'
+        
+            if report_links.get("apm_report"):
+                apm_link_html = f'<a href="{report_links["apm_report"]}">APM Report</a>'
+                formatted_start = actual_start_time.strftime("%m/%d/%Y %I:%M %p") if actual_start_time else "N/A"
+                formatted_end = actual_end_time.strftime("%m/%d/%Y %I:%M %p") if actual_end_time else "N/A"
+        
+                html_content = f"""
     <html>
     <body style="font-family: Arial, sans-serif; font-size: 14px; color: #333;">
     <!-- ===================== HEADER ===================== -->
@@ -79,7 +91,7 @@ def generate_and_print_email_vars(
         <td style="border-top:1px solid #ccc; padding: 8px;">{total}</td>
         <td style="border-top:1px solid #ccc; padding: 8px; color: green;"><b>{success}</b></td>
         <td style="border-top:1px solid #ccc; padding: 8px; color: red;"><b>{failed}</b></td>
-        <td style="border-top:1px solid #ccc; padding: 8px;">See attachment for more details</td>
+        <td style="border-top:1px solid #ccc; padding: 8px;">{patch_link_html if patch_link_html else "No report available"}</td>
       </tr>
     </table>
     <!-- ===================== APM STATUS ===================== -->
@@ -98,9 +110,15 @@ def generate_and_print_email_vars(
         <td style="border-top:1px solid #ccc; padding: 8px; color: red;"><b>{apm_red}</b></td>
       </tr>
     </table>
+    <!-- ===================== REPORT LINKS ===================== -->
+    <h3 style="color:#2F5597; margin-top:20px;">Reports</h3>
+    <ul>
+      <li>{patch_link_html}</li>
+      <li>{apm_link_html}</li>
+    </ul>
     <!-- ===================== ACTION ===================== -->
     <p style="margin-top:20px;">
-        Operations team, please review the attached reports and take action for failed servers.
+        Operations team, please review the reports using the links above and take action for failed servers.
     </p>
     <!-- ===================== LINKS ===================== -->
     <h3 style="color:#2F5597; margin-top:20px;">Execution Links</h3>

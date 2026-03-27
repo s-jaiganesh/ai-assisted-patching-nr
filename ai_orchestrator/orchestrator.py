@@ -27,6 +27,7 @@ from .scheduler import parse_group_name_for_schedule, tz_now
 from .reporting import summarize_rows, write_reports
 from .email import generate_and_print_email_vars
 from .teams_notifier import notify_event
+from .sharepoint_client import SharePointClient
 
 @dataclass
 class PatchPipeline:
@@ -186,6 +187,8 @@ def main():
     pg_cfg = plan["integrations"]["postgres"]
     teams_cfg = plan.get("integrations", {}).get("communications", {}).get("teams", {})
     email_cfg = plan.get("integrations", {}).get("communications", {}).get("email", {})
+    sp_cfg = plan.get("integrations", {}).get("sharepoint", {})
+    sp_enabled = bool(sp_cfg.get("enabled", False))
     use_teams = bool(teams_cfg.get("enabled", False))
     webhook = teams_cfg.get("webhook_url", "")
     nr_cfg = plan["integrations"].get("newrelic", {})
@@ -212,6 +215,16 @@ def main():
             debug=DEBUG,
         )
 
+    sp_client = None
+    if sp_enabled:
+        sp_client = SharePointClient(
+            tenant_id=sp_cfg["tenant_id"],
+            client_id=sp_cfg["client_id"],
+            client_secret=sp_cfg["client_secret"],
+            hostname=sp_cfg["hostname"],
+            site_path=sp_cfg["site_path"],
+            drive_name=sp_cfg.get("drive_name", "Documents"),
+        )
     inventory_id = int(aap_cfg["inventory_id"])
     patch_job_template_id = int(aap_cfg["job_template_id"])
     remediation_job_template_id = int(aap_cfg.get("remediation_job_template_id", patch_job_template_id))
@@ -754,6 +767,36 @@ def main():
         apm_rows,
         delivery_dir=email_delivery_dir,
     )
+    
+    report_links = {}
+    
+    if sp_enabled and sp_client:
+        try:
+            change_id = meta["change_id"]
+            base_folder = sp_cfg.get("base_folder", "General/patching-reports")
+            folder_path = f"{base_folder}/{change_id}"
+    
+            patch_file = attachments.get("patch_report")
+            apm_file = attachments.get("apm_report")
+    
+            if patch_file:
+                report_links["patch_report"] = sp_client.upload_file(
+                    folder_path,
+                    "patch_report.xlsx",
+                    patch_file,
+                )
+    
+            if apm_file:
+                report_links["apm_report"] = sp_client.upload_file(
+                    folder_path,
+                    "apm_report.xlsx",
+                    apm_file,
+                )
+    
+            print(f"[INFO] SharePoint upload successful: {report_links}")
+    
+        except Exception as e:
+            print(f"[WARN] SharePoint upload failed: {e}")
     summary = summarize_rows(rows, apm_rows)
     has_waves_run = bool(selected_groups)
 
@@ -799,6 +842,7 @@ def main():
                     "warning": summary["counts"].get("WARNING", 0),
                     "degraded": summary["counts"].get("DEGRADED", 0),
                 },
+                "reports": report_links,
                 "reports_generated": ["patch_report", "apm_report"],
                 "action_required": "Review failed and degraded servers from generated reports and refer email attachments.",
                 "links": {
@@ -818,6 +862,7 @@ def main():
         actual_start_time,
         actual_end_time,
         has_waves_run,
+        report_links=report_links
     )
 
     print("Orchestrator script finished.")
