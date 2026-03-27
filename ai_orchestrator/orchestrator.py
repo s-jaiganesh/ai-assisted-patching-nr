@@ -3,7 +3,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from .aap_client import AAPClient
@@ -24,9 +24,9 @@ from .decision_gate import ai_remediation_plan, ai_select_waves
 from .newrelic_client import NewRelicClient
 from .plan_loader import load_plan
 from .scheduler import parse_group_name_for_schedule, tz_now
-from .teams_notifier import post_teams
 from .reporting import summarize_rows, write_reports
 from .email import generate_and_print_email_vars
+from .teams_notifier import notify_event
 
 @dataclass
 class PatchPipeline:
@@ -43,6 +43,8 @@ class PatchPipeline:
     last_heartbeat_at: datetime | None = None
     completed_stages: List[str] = field(default_factory=list)
     failed_hosts: Dict[str, str] = field(default_factory=dict)
+    aap_retry_done: bool = False
+
 
 @dataclass
 class RemediationJob:
@@ -55,24 +57,10 @@ class RemediationJob:
     status: str = "running"
     created_at: datetime | None = None
 
+
 def build_limit(hosts: List[str]) -> str:
     return ",".join(hosts)
 
-def safe_post(use_teams: bool, webhook: str, message: str) -> None:
-    print(message)
-    if not use_teams or not webhook:
-        return
-    try:
-        post_teams(webhook, message)
-    except Exception as exc:
-        print(f"[WARN] Teams notification failed: {exc}")
-
-def fmt_list(items):
-    return "<br>".join([f"- {i}" for i in items]) if items else "None"
-
-def fmt_waiting_message(change_id: str, waiting: Dict[str, datetime]) -> str:
-    parts = [f"{wave} at {dt.strftime('%H:%M %Z')}" for wave, dt in waiting.items()]
-    return f"{change_id} | orchestrator started | waiting for waves: {', '.join(parts)}"
 
 def get_job_health(client: AAPClient, job_id: int) -> dict:
     try:
@@ -80,8 +68,10 @@ def get_job_health(client: AAPClient, job_id: int) -> dict:
     except Exception as exc:
         return {"status": "error", "job_explanation": str(exc), "started": None}
 
+
 def is_terminal_status(status: str) -> bool:
     return status in {"successful", "failed", "error", "canceled"}
+
 
 def fetch_monitoring(
     nr_client: Optional[NewRelicClient],
@@ -98,6 +88,7 @@ def fetch_monitoring(
             update_monitoring(pg_cfg, table_name, host, "post", snap)
         except Exception as exc:
             print(f"[WARN] Failed monitoring update for {host}: {exc}")
+
 
 def launch_patch_pipeline(
     client: AAPClient,
@@ -138,6 +129,7 @@ def launch_patch_pipeline(
         stage_started_at=datetime.now(tz=ZoneInfo(meta.get("timezone", "America/New_York"))),
     )
 
+
 def launch_remediation_job(
     client: AAPClient,
     remediation_template_id: int,
@@ -165,6 +157,7 @@ def launch_remediation_job(
         extra_vars=extra_vars,
     )
 
+
 def main():
     print("Orchestrator script started.")
     ap = argparse.ArgumentParser()
@@ -179,7 +172,7 @@ def main():
     current_time = tz_now(tz)
     cw_start = datetime.fromisoformat(meta["change_window"]["start"])
     cw_end = datetime.fromisoformat(meta["change_window"]["end"])
-    
+
     # ServiceNow Change URL
     snow_cfg = plan["integrations"].get("servicenow", {})
     snow_instance = snow_cfg.get("instance_url", "")
@@ -257,12 +250,23 @@ def main():
         key=lambda g: parse_group_name_for_schedule(g, cw_start, tz) or datetime.max.replace(tzinfo=tz),
     )
 
-    safe_post(
-       use_teams,
-       webhook,
-       f"🔷 <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Orchestrator Started<br><br>"
-       f"⏳ Waiting for Waves: "
-       f"{fmt_list([f'{g} at {waiting_by_wave[g].strftime('%H:%M')}' for g in selected_groups if g in waiting_by_wave]) if selected_groups else '❌ No waves found for patching in the current change window.'}"
+    if DEBUG:
+        print(f"[DEBUG] Candidate groups: {candidate_groups}")
+        print(f"[DEBUG] Selected groups from AI: {selected_groups}")
+
+    notify_event(
+        use_teams,
+        webhook,
+        "orchestrator_started",
+        {
+            "change_id": meta["change_id"],
+            "servicenow_url": servicenow_change_url,
+            "waiting_waves": [
+                f"{g} at {waiting_by_wave[g].strftime('%H:%M')}"
+                for g in selected_groups if g in waiting_by_wave
+            ],
+            "no_waves": not bool(selected_groups)
+        }
     )
 
     wave_hosts: Dict[str, List[str]] = {g: client.get_hosts_in_group(inventory_id, g) for g in selected_groups}
@@ -291,29 +295,72 @@ def main():
     remediation_jobs: Dict[str, RemediationJob] = {}
     failed_terminal: Dict[str, Dict[str, str]] = {}
     remediated_once: set[tuple[str, str]] = set()
+    last_waiting_heartbeat_at: datetime | None = None
 
     while True:
         now = tz_now(tz)
+
+        pending_waves = [g for g in selected_groups if g not in launched_waves]
+        if pending_waves:
+            next_wave = min(
+                pending_waves,
+                key=lambda g: parse_group_name_for_schedule(g, cw_start, tz) or datetime.max.replace(tzinfo=tz),
+            )
+            next_wave_dt = parse_group_name_for_schedule(next_wave, cw_start, tz)
+
+            if (
+                last_waiting_heartbeat_at is None
+                or (now - last_waiting_heartbeat_at).total_seconds() >= heartbeat_seconds
+            ):
+                notify_event(
+                    use_teams,
+                    webhook,
+                    "orchestrator_waiting",
+                    {
+                        "change_id": meta["change_id"],
+                        "servicenow_url": servicenow_change_url,
+                        "next_wave": next_wave,
+                        "scheduled_time": next_wave_dt.strftime("%Y-%m-%d %H:%M %Z") if next_wave_dt else "unknown",
+                        "pending_wave_count": len(pending_waves),
+                    }
+                )
+                last_waiting_heartbeat_at = now
 
         for inv_group in selected_groups:
             if inv_group in launched_waves:
                 continue
             scheduled_dt = parse_group_name_for_schedule(inv_group, cw_start, tz)
-            if actual_start_time is None: # Set actual_start_time when the first wave is launched
-                actual_start_time = now
             if scheduled_dt and now >= scheduled_dt:
                 hosts = wave_hosts_dedup.get(inv_group, [])
                 if not hosts:
                     launched_waves.add(inv_group)
-                    safe_post(use_teams, webhook, f"<a href='{servicenow_change_url}'>{meta['change_id']}</a> | {inv_group} | skipped: no unique hosts")
+                    notify_event(
+                        use_teams,
+                        webhook,
+                        "wave_skipped",
+                        {
+                            "change_id": meta["change_id"],
+                            "servicenow_url": servicenow_change_url,
+                            "wave": inv_group,
+                            "reason": "no unique hosts"
+                        }
+                    )
                     continue
-                safe_post(
+
+                if actual_start_time is None:
+                    actual_start_time = now
+
+                notify_event(
                     use_teams,
                     webhook,
-                    f"🚀 <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Wave Started<br><br>"
-                    f"Wave: {inv_group}<br>"
-                    f"Hosts: {len(hosts)}<br>"
-                    f"Stage: pre_check started"
+                    "wave_started",
+                    {
+                        "change_id": meta["change_id"],
+                        "servicenow_url": servicenow_change_url,
+                        "wave": inv_group,
+                        "host_count": len(hosts),
+                        "stage": "pre_check"
+                    }
                 )
                 pipeline = launch_patch_pipeline(
                     client,
@@ -360,15 +407,18 @@ def main():
                             }
 
                     if rerun_hosts:
-                        safe_post(
+                        notify_event(
                             use_teams,
                             webhook,
-                            f"✅ <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Remediation Successful<br><br>"
-                            f"Wave: {rem.wave_name}<br>"
-                            f"Stage: {rem.stage}<br>"
-                            f"Fixed Hosts:"
-                            f"{fmt_list(sorted(rerun_hosts))}<br>"
-                            f"🚀 Rerun triggered"
+                            "remediation_success",
+                            {
+                                "change_id": meta["change_id"],
+                                "servicenow_url": servicenow_change_url,
+                                "wave": rem.wave_name,
+                                "stage": rem.stage,
+                                "hosts": sorted(rerun_hosts),
+                                "rerun_triggered": True
+                            }
                         )
                         rerun_pipeline = launch_patch_pipeline(
                             client,
@@ -385,14 +435,18 @@ def main():
                         pipelines[rerun_pipeline.pipeline_id] = rerun_pipeline
 
                     if still_failed:
-                        safe_post(
+                        notify_event(
                             use_teams,
                             webhook,
-                            f"❌ <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Remediation Failed<br><br>"
-                            f"Wave: {rem.wave_name}<br>"
-                            f"Stage: {rem.stage}<br>"
-                            f"Still Failing Hosts:"
-                            f"{fmt_list(sorted(still_failed))}"
+                            "remediation_failed",
+                            {
+                                "change_id": meta["change_id"],
+                                "servicenow_url": servicenow_change_url,
+                                "wave": rem.wave_name,
+                                "stage": rem.stage,
+                                "hosts": sorted(still_failed),
+                                "status": "failed",
+                            }
                         )
                 else:
                     for host, fix_type in rem.fix_plan.items():
@@ -400,14 +454,18 @@ def main():
                             "stage": rem.stage,
                             "reason": f"remediation_failed:{fix_type}; {job.get('job_explanation') or status}",
                         }
-                    safe_post(
+                    notify_event(
                         use_teams,
                         webhook,
-                        f"❌ <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Remediation Job Failed<br><br>"
-                        f"Wave: {rem.wave_name}<br>"
-                        f"Stage: {rem.stage}<br>"
-                        f"Hosts:"
-                        f"{fmt_list(sorted(rem.fix_plan.keys()))}"
+                        "remediation_job_failed",
+                        {
+                            "change_id": meta["change_id"],
+                            "servicenow_url": servicenow_change_url,
+                            "wave": rem.wave_name,
+                            "stage": rem.stage,
+                            "hosts": sorted(rem.fix_plan.keys()),
+                            "status": "failed",
+                        }
                     )
                 rem.status = "done"
             else:
@@ -415,7 +473,19 @@ def main():
                     rem.status = "done"
                     for host, fix_type in rem.fix_plan.items():
                         failed_terminal[host] = {"stage": rem.stage, "reason": f"remediation_timeout:{fix_type}"}
-                    safe_post(use_teams, webhook, f"<a href='{servicenow_change_url}'>{meta['change_id']}</a> | {rem.wave_name} | remediation timeout for stage {rem.stage}")
+                    notify_event(
+                        use_teams,
+                        webhook,
+                        "remediation_timeout",
+                        {
+                            "change_id": meta["change_id"],
+                            "servicenow_url": servicenow_change_url,
+                            "wave": rem.wave_name,
+                            "stage": rem.stage,
+                            "hosts": sorted(rem.fix_plan.keys()),
+                            "status": "failed",
+                        }
+                    )
 
         for pipeline_id, pipe in list(pipelines.items()):
             if pipe.status in {"done", "failed_terminal"}:
@@ -423,27 +493,39 @@ def main():
 
             if not pipe.active_hosts:
                 pipe.status = "done"
-                safe_post(
-                    use_teams, 
-                    webhook, 
-                    f"✅ <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Wave Completed<br><br>"
-                    f"Wave: {pipe.wave_name}<br>"
-                    f"Completed Stages:"
-                    f"{fmt_list(pipe.completed_stages)}<br>"
-                    f"Failed Hosts: {len(pipe.failed_hosts)}"
+                notify_event(
+                    use_teams,
+                    webhook,
+                    "wave_completed",
+                    {
+                        "change_id": meta["change_id"],
+                        "servicenow_url": servicenow_change_url,
+                        "wave": pipe.wave_name,
+                        "completed_stages": pipe.completed_stages,
+                        "failed_hosts_count": len(pipe.failed_hosts),
+                        "successful_hosts_count": len(pipe.active_hosts),
+                        "total_hosts": len(pipe.hosts),
+                        "status": "completed",
+                    }
                 )
                 continue
 
             if pipe.current_stage_idx >= len(STAGES):
                 pipe.status = "done"
-                safe_post(
-                    use_teams, 
-                    webhook, 
-                    f"✅ <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Wave Completed<br><br>"
-                    f"Wave: {pipe.wave_name}<br>"
-                    f"Completed Stages:"
-                    f"{fmt_list(pipe.completed_stages)}<br>"
-                    f"Failed Hosts: {len(pipe.failed_hosts)}"
+                notify_event(
+                    use_teams,
+                    webhook,
+                    "wave_completed",
+                    {
+                        "change_id": meta["change_id"],
+                        "servicenow_url": servicenow_change_url,
+                        "wave": pipe.wave_name,
+                        "completed_stages": pipe.completed_stages,
+                        "failed_hosts_count": len(pipe.failed_hosts),
+                        "successful_hosts_count": len(pipe.active_hosts),
+                        "total_hosts": len(pipe.hosts),
+                        "status": "completed",
+                    }
                 )
                 continue
 
@@ -458,15 +540,23 @@ def main():
                 success_hosts = results["success_hosts"]
                 failed_hosts = results["failed_hosts"]
 
-                safe_post(
+                notify_event(
                     use_teams,
                     webhook,
-                    f"🟡 <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Stage Update<br><br>"
-                    f"Wave: {pipe.wave_name}<br>"
-                    f"Stage: {stage}<br>"
-                    f"✅ Success: {len(success_hosts)}<br>"
-                    f"❌ Failed: {len(failed_hosts)}<br>"
-                    f"{fmt_list([f'{h} ({results['failed_reasons'].get(h,'unknown')})' for h in failed_hosts]) if failed_hosts else 'No failures'}"
+                    "stage_update",
+                    {
+                        "change_id": meta["change_id"],
+                        "servicenow_url": servicenow_change_url,
+                        "wave": pipe.wave_name,
+                        "stage": stage,
+                        "success_count": len(success_hosts),
+                        "failed_count": len(failed_hosts),
+                        "failed_hosts_details": [
+                            f"{h} ({results['failed_reasons'].get(h, 'unknown')})"
+                            for h in failed_hosts
+                        ] if failed_hosts else [],
+                        "status": "in_progress",
+                    }
                 )
 
                 if failed_hosts:
@@ -494,14 +584,21 @@ def main():
                         remediated_once.add(retry_key)
 
                     if actionable:
-                        safe_post(
+                        notify_event(
                             use_teams,
                             webhook,
-                            f"🛠 <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Remediation Triggered<br><br>"
-                            f"Wave: {pipe.wave_name}<br>"
-                            f"Stage: {stage}<br>"
-                            f"Fix Plan:"
-                            f"{fmt_list([f"{h} → {fix}" for h, fix in actionable.items()])}"
+                            "remediation_triggered",
+                            {
+                                "change_id": meta["change_id"],
+                                "servicenow_url": servicenow_change_url,
+                                "wave": pipe.wave_name,
+                                "stage": stage,
+                                "fix_plan": [
+                                    f"{h} → {fix}"
+                                    for h, fix in actionable.items()
+                                ],
+                                "status": "triggered",
+                            }
                         )
                         rem_job_id = launch_remediation_job(
                             client,
@@ -531,13 +628,19 @@ def main():
                 continue
 
             if pipe.last_heartbeat_at is None or (now - pipe.last_heartbeat_at).total_seconds() >= heartbeat_seconds:
-                safe_post(
+                notify_event(
                     use_teams,
                     webhook,
-                    f"⏳ <a href='{servicenow_change_url}'>{meta['change_id']}</a> | In Progress<br><br>"
-                    f"Wave: {pipe.wave_name}<br>"
-                    f"Stage: {stage}<br>"
-                    F"Progress: {completion['completed_count']}/{completion['expected_count']}"
+                    "stage_progress",
+                    {
+                        "change_id": meta["change_id"],
+                        "servicenow_url": servicenow_change_url,
+                        "wave": pipe.wave_name,
+                        "stage": stage,
+                        "completed_count": completion["completed_count"],
+                        "expected_count": completion["expected_count"],
+                        "status": "in_progress",
+                    }
                 )
                 pipe.last_heartbeat_at = now
 
@@ -552,31 +655,79 @@ def main():
                 for host in completion["pending_hosts"]:
                     failed_terminal[host] = {"stage": stage, "reason": f"stage_timeout:{stage}"}
                 pipe.status = "failed_terminal"
-                safe_post(
-                    use_teams, 
-                    webhook, 
-                    f"⚠️ <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Stage Timeout<br><br>"
-                    f"Wave: {pipe.wave_name}<br>"
-                    f"Stage: {stage}<br>"
-                    f"Hosts Timed Out:"
-                    f"{fmt_list(completion['pending_hosts'])}"
+                notify_event(
+                    use_teams,
+                    webhook,
+                    "stage_timeout",
+                    {
+                        "change_id": meta["change_id"],
+                        "servicenow_url": servicenow_change_url,
+                        "wave": pipe.wave_name,
+                        "stage": stage,
+                        "hosts": completion["pending_hosts"],
+                        "status": "timeout",
+                    }
                 )
                 continue
 
             if status in {"failed", "error", "canceled"} and completion["pending_hosts"]:
-                explanation = job.get("job_explanation") or status
+                explanation = str(job.get("job_explanation") or status)
+
+                aap_not_started = job.get("started") is None
+                retryable_start_failure = aap_not_started and not pipe.aap_retry_done
+
+                if retryable_start_failure:
+                    notify_event(
+                        use_teams,
+                        webhook,
+                        "aap_job_retry",
+                        {
+                            "change_id": meta["change_id"],
+                            "servicenow_url": servicenow_change_url,
+                            "wave": pipe.wave_name,
+                            "stage": stage,
+                            "job_status": status,
+                            "reason": explanation,
+                            "hosts": completion["pending_hosts"],
+                        }
+                    )
+
+                    retry_pipeline = launch_patch_pipeline(
+                        client,
+                        patch_job_template_id,
+                        meta,
+                        pg_cfg,
+                        table_name,
+                        pipe.wave_name,
+                        pipe.active_hosts,
+                        stage,
+                        pipe.kind == "rerun",
+                        f"{pipe.wave_name}:{pipe.kind}:{stage}:retry:{int(time.time())}",
+                    )
+                    retry_pipeline.completed_stages = list(pipe.completed_stages)
+                    retry_pipeline.failed_hosts = dict(pipe.failed_hosts)
+                    retry_pipeline.aap_retry_done = True
+
+                    pipe.status = "done"
+                    pipelines[retry_pipeline.pipeline_id] = retry_pipeline
+                    continue
+
                 for host in completion["pending_hosts"]:
                     failed_terminal[host] = {"stage": stage, "reason": f"aap_job_{status}:{explanation}"}
                 pipe.status = "failed_terminal"
-                safe_post(
+                notify_event(
                     use_teams,
                     webhook,
-                    f"❌ <a href='{servicenow_change_url}'>{meta['change_id']}</a> | AAP Job Failed<br><br>"
-                    f"Wave: {pipe.wave_name}<br>"
-                    f"Stage: {stage}<br>"
-                    f"Status: {status}<br>"
-                    f"Affected Hosts:"
-                    f"{fmt_list(completion['pending_hosts'])}"
+                    "aap_job_failed",
+                    {
+                        "change_id": meta["change_id"],
+                        "servicenow_url": servicenow_change_url,
+                        "wave": pipe.wave_name,
+                        "stage": stage,
+                        "job_status": status,
+                        "hosts": completion["pending_hosts"],
+                        "status": "failed",
+                    }
                 )
 
         launched_all = len(launched_waves) == len(selected_groups)
@@ -604,50 +755,61 @@ def main():
         delivery_dir=email_delivery_dir,
     )
     summary = summarize_rows(rows, apm_rows)
-    has_waves_run = bool(selected_groups) # Determine if any waves were selected and potentially ran
-    
+    has_waves_run = bool(selected_groups)
+
     # Github Run ID
     github_run_id = os.getenv("GITHUB_RUN_ID", "")
     github_repo = os.getenv("GITHUB_REPOSITORY", "")
     github_url = ""
+
     # AAP Template url
     aap_url = aap_cfg.get("controller_url", "")
     job_template_id = aap_cfg.get("job_template_id", "")
     aap_template_url = f"{aap_url}/#/templates/job_templates/{job_template_id}/jobs"
+
     if github_run_id and github_repo:
         github_url = f"https://github.com/{github_repo}/actions/runs/{github_run_id}"
+
     if not has_waves_run:
-        safe_post(
+        notify_event(
             use_teams,
             webhook,
-            f"🚀 <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Patching Completed<br><br>"
-            f"No patching operations were executed as no eligible waves were found in the current change window or matching inventory.<br><br>"
-            f"More info: <br>"
-            f"<a href='{github_url}'>Pipeline job</a><br>"
+            "patching_skipped",
+            {
+                "change_id": meta["change_id"],
+                "servicenow_url": servicenow_change_url,
+                "reason": "no_eligible_waves",
+                "message": "No patching operations were executed as no eligible waves were found in the current change window or matching inventory.",
+                "link": github_url,
+                "status": "skipped",
+            }
         )
     else:
-        safe_post(
+        notify_event(
             use_teams,
             webhook,
-            f"🚀 <a href='{servicenow_change_url}'>{meta['change_id']}</a> | Patching Completed<br><br>"
-            f"📊 Summary:<br>"
-            f"Total: {summary['counts'].get('TOTAL', 0)}<br>"
-            f"Success: {summary['counts'].get('SUCCESS', 0)}<br>"
-            f"Failed: {summary['counts'].get('FAILED', 0)}<br>"
-            f"Warning: {summary['counts'].get('WARNING', 0)}<br>"
-            f"Degraded: {summary['counts'].get('DEGRADED', 0)}<br><br>"
-            f"📁 Reports Generated:<br>"
-            f"- Patch Report<br>"
-            f"- APM Report<br><br>"
-            f"⚠️ Action Required:<br>"
-            f"Review failed and degraded servers from the generated reports.<br>"
-            f"Refer the attachment in the email communication<br><br>"
-            f"More info: <br>"
-            f"<a href='{github_url}'>Pipeline job</a><br>"
-            f"<a href='{aap_template_url}'>Ansible job</a>"
+            "patching_completed",
+            {
+                "change_id": meta["change_id"],
+                "servicenow_url": servicenow_change_url,
+                "summary_counts": {
+                    "total": summary["counts"].get("TOTAL", 0),
+                    "success": summary["counts"].get("SUCCESS", 0),
+                    "failed": summary["counts"].get("FAILED", 0),
+                    "warning": summary["counts"].get("WARNING", 0),
+                    "degraded": summary["counts"].get("DEGRADED", 0),
+                },
+                "reports_generated": ["patch_report", "apm_report"],
+                "action_required": "Review failed and degraded servers from generated reports and refer email attachments.",
+                "links": {
+                    "pipeline": github_url,
+                    "aap_job": aap_template_url
+                },
+                "status": "completed",
+            }
         )
 
-    has_waves_run = bool(selected_groups) # Determine if any waves were selected and potentially ran
+    has_waves_run = bool(selected_groups)
     generate_and_print_email_vars(
         plan,
         summary,
@@ -657,7 +819,7 @@ def main():
         actual_end_time,
         has_waves_run,
     )
-    
+
     print("Orchestrator script finished.")
 
 if __name__ == "__main__":
