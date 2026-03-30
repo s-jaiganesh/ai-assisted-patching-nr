@@ -136,7 +136,7 @@ def call_llm(payload: dict) -> str:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             res = json.loads(resp.read().decode())
 
-        return res.get("text", "").strip()
+        return res.get("body", "").strip()
 
     except Exception as e:
         print(f"[LLM ERROR] {e}")
@@ -160,7 +160,7 @@ def post(webhook: str, message: str):
     try:
         req = urllib.request.Request(
             webhook,
-            data=json.dumps({"text": message}).encode(),
+            data=json.dumps({"body": message}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST"
         )
