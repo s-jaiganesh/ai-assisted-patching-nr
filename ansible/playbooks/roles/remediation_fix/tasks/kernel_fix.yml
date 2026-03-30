@@ -1,0 +1,70 @@
+---
+- name: Get installed kernels
+  command: rpm -q kernel
+  register: kernel_list
+  changed_when: false
+  ignore_errors: yes
+
+- name: Determine latest kernel version
+  set_fact:
+    latest_kernel: "{{ (kernel_list.stdout_lines | sort | last).replace('kernel-', '') }}"
+  when: kernel_list.rc == 0
+
+- name: Ensure kernel image exists in /boot
+  stat:
+    path: "/boot/vmlinuz-{{ latest_kernel }}"
+  register: kernel_image
+  when: kernel_list.rc == 0
+
+- name: Verify kernel integrity
+  command: rpm -V kernel-{{ latest_kernel }}
+  register: kernel_verify
+  changed_when: false
+  failed_when: false
+  when: kernel_list.rc == 0 and kernel_image.stat.exists
+
+- name: Reinstall kernel (RHEL 8/9)
+  command: dnf -y reinstall kernel-{{ latest_kernel }}
+  when:
+    - kernel_list.rc == 0
+    - kernel_image.stat.exists
+    - kernel_verify.rc != 0
+    - ansible_distribution_major_version | int >= 8
+  register: reinstall_result
+  ignore_errors: yes
+
+- name: Reinstall kernel (RHEL 7)
+  command: yum -y reinstall kernel-{{ latest_kernel }}
+  when:
+    - kernel_list.rc == 0
+    - kernel_image.stat.exists
+    - kernel_verify.rc != 0
+    - ansible_distribution_major_version | int == 7
+  register: reinstall_result
+  ignore_errors: yes
+
+- name: Regenerate initramfs if repaired
+  command: dracut -f /boot/initramfs-{{ latest_kernel }}.img {{ latest_kernel }}
+  when:
+    - kernel_list.rc == 0
+    - kernel_image.stat.exists
+    - kernel_verify.rc != 0
+  ignore_errors: yes
+
+- name: Get current default kernel
+  command: grubby --default-kernel
+  register: current_default
+  changed_when: false
+  ignore_errors: yes
+
+- name: Set default kernel if not already set
+  command: grubby --set-default /boot/vmlinuz-{{ latest_kernel }}
+  when:
+    - kernel_list.rc == 0
+    - kernel_image.stat.exists
+    - current_default.stdout != "/boot/vmlinuz-{{ latest_kernel }}"
+  ignore_errors: yes
+
+- name: Log kernel remediation attempt
+  debug:
+    msg: "Kernel remediation attempted on {{ inventory_hostname }}"
