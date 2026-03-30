@@ -1,154 +1,178 @@
 import json
-import os
 import urllib.request
+
+# ✅ Use existing LLM client (GAS API)
+from .llm_client import call_llm
+
 
 # -----------------------------
 # CONFIG
 # -----------------------------
-LLM_ENABLED = os.getenv("LLM_ENABLED", "true").lower() == "true"
-LLM_API_URL = os.getenv("LLM_API_URL")
-LLM_API_KEY = os.getenv("LLM_API_KEY")
 TIMEOUT = 20
 
+
 # -----------------------------
-# MASTER PROMPT
+# LIGHTWEIGHT PROMPT
 # -----------------------------
-MASTER_PROMPT = """
-You are an enterprise DevOps assistant generating Microsoft Teams notifications for automated Linux patching.
+def build_llm_prompt(payload: dict) -> str:
+    return f"""
+You are assisting in generating short additional context for a Teams notification.
 
-GOAL:
-Generate clean, professional, structured Teams messages based on the event type and input data.
+Rules:
+- Max 3 lines
+- No headers
+- No emojis
+- No markdown
+- Use <br> for line breaks if needed
+- Do NOT repeat the main message
+- Add only useful insight (reason, suggestion, summary)
 
-STRICT RULES:
-- Output MUST be plain text with HTML formatting
-- Use ONLY <br> and <a href="">
-- NO markdown
-- NO emojis
-- NO null/None values
-- Do NOT print JSON
-- Keep messages concise and readable
-- Always include change_id as clickable ServiceNow link if provided
+Input:
+{json.dumps(payload, indent=2)}
 
-FORMATTING STANDARD:
-- First line: <a href="URL">CHANGE_ID</a> | EVENT TITLE
-- Use section headers with labels like:
-  Summary:
-  Wave:
-  Stage:
-  Hosts:
-  Status:
-  Action Required:
-- Use <br> for line breaks
-- Keep spacing clean (avoid clutter)
-
-EVENT TYPES AND EXPECTED FORMAT:
-
-1. orchestrator_started
-- Show waiting waves and schedule times
-
-2. orchestrator_waiting
-- Show next wave and scheduled time
-
-3. wave_started
-- Show wave name, host count, starting stage
-
-4. wave_skipped
-- Show wave name and reason
-
-5. stage_progress
-- Show completed vs expected hosts
-
-6. stage_update
-- Show success count, failed count
-- If failed hosts exist, list them with reason
-
-7. remediation_triggered
-- Show stage and remediation plan (host → fix)
-
-8. remediation_success
-- Show fixed hosts and rerun triggered
-
-9. remediation_failed
-- Show failed hosts after remediation
-
-10. remediation_job_failed
-- Show failure with reason
-
-11. stage_timeout
-- Show affected hosts
-
-12. aap_job_retry
-- Show retry reason and affected hosts
-
-13. aap_job_failed
-- Show job failure and affected hosts
-
-14. wave_completed
-- Show completed stages, success/failed counts
-
-15. patching_completed
-- Show summary:
-  Total, Success, Failed, Warning, Degraded
-- Include:
-  Reports Generated
-  Action Required
-  Links (pipeline, AAP job)
-
-16. patching_skipped
-- Show reason clearly
-
-INPUT:
-{input_json}
-
-INSTRUCTIONS:
-- Identify event_type
-- Format message accordingly
-- Ignore missing fields gracefully
-- Do NOT hallucinate data
-- Keep output under 15 lines unless necessary
-
-Return ONLY the formatted message.
+Return only the additional lines.
 """
 
-# -----------------------------
-# LLM CALL
-# -----------------------------
-def call_llm(payload: dict) -> str:
-    try:
-        prompt = MASTER_PROMPT.replace("{input_json}", json.dumps(payload, indent=2))
 
-        body = {
-            "prompt": prompt,
-            "max_tokens": 800,
-            "temperature": 0.2
-        }
+# -----------------------------
+# STRUCTURED MESSAGE BUILDER
+# -----------------------------
+def build_structured_message(payload: dict) -> str:
+    change_id = payload.get("change_id", "UNKNOWN")
+    event = payload.get("event_type", "")
+    url = payload.get("servicenow_url", "#")
 
-        req = urllib.request.Request(
-            LLM_API_URL,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {LLM_API_KEY}"
-            },
-            method="POST"
+    header = f"<a href='{url}'>{change_id}</a> | "
+
+    # -------------------------
+    # ORCHESTRATOR STARTED
+    # -------------------------
+    if event == "orchestrator_started":
+        return (
+            f"{header}Orchestrator Started<br><br>"
+            f"Status:<br>"
+            f"Waiting for eligible waves"
         )
 
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            res = json.loads(resp.read().decode())
+    # -------------------------
+    # ORCHESTRATOR WAITING
+    # -------------------------
+    elif event == "orchestrator_waiting":
+        return (
+            f"{header}Waiting for Next Wave<br><br>"
+            f"Wave:<br>{payload.get('next_wave', 'N/A')}<br><br>"
+            f"Scheduled Time:<br>{payload.get('scheduled_time', 'N/A')}"
+        )
 
-        return res.get("body", "").strip()
+    # -------------------------
+    # WAVE STARTED
+    # -------------------------
+    elif event == "wave_started":
+        return (
+            f"{header}Wave Started<br><br>"
+            f"Wave:<br>{payload.get('wave', 'N/A')}<br><br>"
+            f"Hosts:<br>{payload.get('host_count', 0)}<br><br>"
+            f"Stage:<br>{payload.get('stage', 'pre_check')}"
+        )
 
-    except Exception as e:
-        print(f"[LLM ERROR] {e}")
-        return ""
+    # -------------------------
+    # WAVE SKIPPED
+    # -------------------------
+    elif event == "wave_skipped":
+        return (
+            f"{header}Wave Skipped<br><br>"
+            f"Wave:<br>{payload.get('wave', 'N/A')}<br><br>"
+            f"Reason:<br>{payload.get('reason', 'No valid hosts')}"
+        )
 
+    # -------------------------
+    # STAGE UPDATE
+    # -------------------------
+    elif event == "stage_update":
+        return (
+            f"{header}Stage Update<br><br>"
+            f"Stage:<br>{payload.get('stage', 'N/A')}<br><br>"
+            f"Success:<br>{payload.get('success', 0)}<br>"
+            f"Failed:<br>{payload.get('failed', 0)}"
+        )
 
-# -----------------------------
-# FALLBACK (MINIMAL)
-# -----------------------------
-def fallback(payload: dict) -> str:
-    change_id = payload.get("change_id", "UNKNOWN")
-    event = payload.get("event_type", "update")
+    # -------------------------
+    # REMEDIATION TRIGGERED
+    # -------------------------
+    elif event == "remediation_triggered":
+        return (
+            f"{header}Remediation Triggered<br><br>"
+            f"Stage:<br>{payload.get('stage', 'N/A')}"
+        )
+
+    # -------------------------
+    # REMEDIATION SUCCESS
+    # -------------------------
+    elif event == "remediation_success":
+        hosts = payload.get("fixed_hosts", [])
+        return (
+            f"{header}Remediation Successful<br><br>"
+            f"Fixed Hosts:<br>{'<br>'.join(hosts)}<br><br>"
+            f"Rerun Triggered"
+        )
+
+    # -------------------------
+    # REMEDIATION FAILED
+    # -------------------------
+    elif event == "remediation_failed":
+        hosts = payload.get("failed_hosts", [])
+        return (
+            f"{header}Remediation Failed<br><br>"
+            f"Hosts:<br>{'<br>'.join(hosts)}"
+        )
+
+    # -------------------------
+    # AAP JOB FAILED
+    # -------------------------
+    elif event == "aap_job_failed":
+        return (
+            f"{header}AAP Job Failed<br><br>"
+            f"Reason:<br>{payload.get('reason', 'Job execution failed')}"
+        )
+
+    # -------------------------
+    # WAVE COMPLETED
+    # -------------------------
+    elif event == "wave_completed":
+        return (
+            f"{header}Wave Completed<br><br>"
+            f"Wave:<br>{payload.get('wave', 'N/A')}"
+        )
+
+    # -------------------------
+    # PATCHING COMPLETED
+    # -------------------------
+    elif event == "patching_completed":
+        summary = payload.get("summary", {})
+
+        return (
+            f"{header}Patching Completed<br><br>"
+            f"Summary:<br>"
+            f"Total: {summary.get('TOTAL', 0)}<br>"
+            f"Success: {summary.get('SUCCESS', 0)}<br>"
+            f"Failed: {summary.get('FAILED', 0)}<br>"
+            f"Warning: {summary.get('WARNING', 0)}<br>"
+            f"Degraded: {summary.get('DEGRADED', 0)}<br><br>"
+            f"Reports:<br>"
+            f"- Patch Report<br>"
+            f"- APM Report<br><br>"
+            f"Action Required:<br>"
+            f"Review failed and degraded systems"
+        )
+
+    # -------------------------
+    # PATCHING SKIPPED
+    # -------------------------
+    elif event == "patching_skipped":
+        return (
+            f"{header}Patching Skipped<br><br>"
+            f"Reason:<br>{payload.get('reason', 'No eligible waves found')}"
+        )
 
     return f"{change_id} | {event.replace('_', ' ').title()}"
 
@@ -165,6 +189,7 @@ def post(webhook: str, message: str):
             method="POST"
         )
         urllib.request.urlopen(req, timeout=TIMEOUT)
+
     except Exception as e:
         print(f"[TEAMS ERROR] {e}")
 
@@ -181,13 +206,19 @@ def notify_event(use_teams: bool, webhook: str, event_type: str, data: dict):
         **data
     }
 
-    message = ""
+    # ✅ Step 1: Structured message (PRIMARY)
+    message = build_structured_message(payload)
 
-    if LLM_ENABLED:
-        message = call_llm(payload)
+    # ✅ Step 2: LLM enhancement (via GAS API)
+    try:
+        prompt = build_llm_prompt(payload)
+        ai_extra = call_llm(prompt)
 
-    if not message:
-        print("[INFO] Using fallback")
-        message = fallback(payload)
+        if ai_extra:
+            message += f"<br><br>{ai_extra.strip()}"
 
+    except Exception as e:
+        print(f"[LLM ENHANCEMENT ERROR] {e}")
+
+    # ✅ Step 3: Send to Teams
     post(webhook, message)
