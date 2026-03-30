@@ -48,10 +48,19 @@ def build_structured_message(payload: dict) -> str:
     # ORCHESTRATOR STARTED
     # -------------------------
     if event == "orchestrator_started":
+        waiting = payload.get("waiting_waves", [])
+        no_waves = payload.get("no_waves", False)
+    
+        if no_waves:
+            return (
+                f"{header}Orchestrator Started<br><br>"
+                f"Status:<br>No eligible waves found"
+            )
+
         return (
             f"{header}Orchestrator Started<br><br>"
-            f"Status:<br>"
-            f"Waiting for eligible waves"
+            f"Waiting Waves:<br>"
+            f"{'<br>'.join(waiting) if waiting else 'None'}"
         )
 
     # -------------------------
@@ -89,30 +98,50 @@ def build_structured_message(payload: dict) -> str:
     # STAGE UPDATE
     # -------------------------
     elif event == "stage_update":
-        return (
+        success = payload.get("success") or payload.get("success_count", 0)
+        failed = payload.get("failed") or payload.get("failed_count", 0)
+        failed_details = payload.get("failed_hosts_details", [])
+    
+        msg = (
             f"{header}Stage Update<br><br>"
             f"Stage:<br>{payload.get('stage', 'N/A')}<br><br>"
-            f"Success:<br>{payload.get('success', 0)}<br>"
-            f"Failed:<br>{payload.get('failed', 0)}"
+            f"Success:<br>{success}<br>"
+            f"Failed:<br>{failed}"
         )
+    
+        if failed_details:
+            msg += "<br><br>Failed Hosts:<br>" + "<br>".join(failed_details)
+            msg += "<br>".join(failed_details[:10])  # limit to avoid clutter
+            if len(failed_details) > 10:
+                msg += f"<br>...and {len(failed_details) - 10} more"
+    
+        return msg
 
     # -------------------------
     # REMEDIATION TRIGGERED
     # -------------------------
     elif event == "remediation_triggered":
-        return (
+        fixes = payload.get("fix_plan", [])
+    
+        msg = (
             f"{header}Remediation Triggered<br><br>"
             f"Stage:<br>{payload.get('stage', 'N/A')}"
         )
+    
+        if fixes:
+            msg += "<br><br>Fix Plan:<br>" + "<br>".join(fixes)
+    
+        return msg
 
     # -------------------------
     # REMEDIATION SUCCESS
     # -------------------------
     elif event == "remediation_success":
-        hosts = payload.get("fixed_hosts", [])
+        hosts = payload.get("fixed_hosts") or payload.get("hosts", [])
+    
         return (
             f"{header}Remediation Successful<br><br>"
-            f"Fixed Hosts:<br>{'<br>'.join(hosts)}<br><br>"
+            f"Fixed Hosts:<br>{'<br>'.join(hosts) if hosts else 'None'}<br><br>"
             f"Rerun Triggered"
         )
 
@@ -132,7 +161,8 @@ def build_structured_message(payload: dict) -> str:
     elif event == "aap_job_failed":
         return (
             f"{header}AAP Job Failed<br><br>"
-            f"Reason:<br>{payload.get('reason', 'Job execution failed')}"
+            f"Stage:<br>{payload.get('stage', 'N/A')}<br><br>"
+            f"Reason:<br>{payload.get('job_status', 'failed')}"
         )
 
     # -------------------------
@@ -148,22 +178,35 @@ def build_structured_message(payload: dict) -> str:
     # PATCHING COMPLETED
     # -------------------------
     elif event == "patching_completed":
-        summary = payload.get("summary", {})
-
-        return (
+        summary = payload.get("summary") or payload.get("summary_counts", {})
+        links = payload.get("links", {})
+    
+        msg = (
             f"{header}Patching Completed<br><br>"
             f"Summary:<br>"
-            f"Total: {summary.get('TOTAL', 0)}<br>"
-            f"Success: {summary.get('SUCCESS', 0)}<br>"
-            f"Failed: {summary.get('FAILED', 0)}<br>"
-            f"Warning: {summary.get('WARNING', 0)}<br>"
-            f"Degraded: {summary.get('DEGRADED', 0)}<br><br>"
-            f"Reports:<br>"
-            f"- Patch Report<br>"
-            f"- APM Report<br><br>"
-            f"Action Required:<br>"
-            f"Review failed and degraded systems"
+            f"Total: {summary.get('TOTAL') or summary.get('total', 0)}<br>"
+            f"Success: {summary.get('SUCCESS') or summary.get('success', 0)}<br>"
+            f"Failed: {summary.get('FAILED') or summary.get('failed', 0)}<br>"
+            f"Warning: {summary.get('WARNING') or summary.get('warning', 0)}<br>"
+            f"Degraded: {summary.get('DEGRADED') or summary.get('degraded', 0)}"
         )
+    
+        if links:
+            msg += "<br><br>Links:<br>"
+            if links.get("pipeline"):
+                msg += f"<a href='{links['pipeline']}'>Pipeline</a><br>"
+            if links.get("aap_job"):
+                msg += f"<a href='{links['aap_job']}'>AAP Jobs</a><br>"
+    
+        msg += (
+            "<br>Reports:<br>"
+            "- Patch Report<br>"
+            "- APM Report<br><br>"
+            "Action Required:<br>"
+            "Review failed and degraded systems"
+        )
+    
+        return msg
 
     # -------------------------
     # PATCHING SKIPPED
