@@ -44,6 +44,11 @@ def generate_and_print_email_vars(
         github_url = f"https://github.com/{github_repo}/actions/runs/{github_run_id}"
 
     support_email = email_cfg.get("support_email", "")
+    patch_url = report_links.get("patch_report") if report_links else None
+    apm_url = report_links.get("apm_report") if report_links else None
+    patch_link_html = f'<a href="{patch_url}">Patch Report</a>' if patch_url else "<i>Patch Report Not Available</i>"
+    apm_link_html = f'<a href="{apm_url}">APM Report</a>' if apm_url else "<i>APM Report Not Available</i>"
+    nr_reporting = 0
 
     if has_waves_run:
         counts = summary.get("counts", {})
@@ -54,22 +59,9 @@ def generate_and_print_email_vars(
         apm_green = sum(1 for r in apm_rows if str(r.get("apm_post_alert", "")).lower() in ["green", "ok", "not_alerting"])
         apm_red = sum(1 for r in apm_rows if str(r.get("apm_post_alert", "")).lower() in ["red", "critical", "alerting"])
         nr_reporting = sum(1 for r in apm_rows if r.get("infra_post_reporting") is True)
-        # -----------------------------
-        # SHAREPOINT REPORT LINKS
-        # -----------------------------
-        patch_link_html = ""
-        apm_link_html = ""
-        
-        if report_links:
-            if report_links.get("patch_report"):
-                patch_link_html = f'<a href="{report_links["patch_report"]}">Patch Report</a>'
-        
-            if report_links.get("apm_report"):
-                apm_link_html = f'<a href="{report_links["apm_report"]}">APM Report</a>'
-                formatted_start = actual_start_time.strftime("%m/%d/%Y %I:%M %p") if actual_start_time else "N/A"
-                formatted_end = actual_end_time.strftime("%m/%d/%Y %I:%M %p") if actual_end_time else "N/A"
-        
-                html_content = f"""
+        formatted_start = actual_start_time.strftime("%m/%d/%Y %I:%M %p") if actual_start_time else "N/A"
+        formatted_end = actual_end_time.strftime("%m/%d/%Y %I:%M %p") if actual_end_time else "N/A"
+        html_content = f"""
     <html>
     <body style="font-family: Arial, sans-serif; font-size: 14px; color: #333;">
     <!-- ===================== HEADER ===================== -->
@@ -148,6 +140,11 @@ def generate_and_print_email_vars(
         Operations team, please review the inventory list and change window if you intended to patch servers.
     </p>
     <!-- ===================== LINKS ===================== -->
+    <h3 style="color:#2F5597; margin-top:20px;">Reports</h3>
+    <ul>
+      <li>{patch_link_html}</li>
+      <li>{apm_link_html}</li>
+    </ul>
     <h3 style="color:#2F5597; margin-top:20px;">Execution Links</h3>
     <p>
       <a href="{servicenow_change_url}" style="color:#1a73e8;">Change Request</a><br>
