@@ -187,7 +187,7 @@ def main():
     pg_cfg = plan["integrations"]["postgres"]
     teams_cfg = plan.get("integrations", {}).get("communications", {}).get("teams", {})
     email_cfg = plan.get("integrations", {}).get("communications", {}).get("email", {})
-    sp_cfg = plan.get("integrations", {}).get("sharepoint", {})
+    sp_cfg = plan.get("integrations", {}).get("communications", {}).get("sharepoint", {})
     sp_enabled = bool(sp_cfg.get("enabled", False))
     use_teams = bool(teams_cfg.get("enabled", False))
     webhook = teams_cfg.get("webhook_url", "")
